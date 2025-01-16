@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cannon Game</title>
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            height: 100%;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            /* Space between boxes */
+        }
+
+        .control-box {
+            background: white;
+            padding: 2px 5px;
+            border-radius: 5px;
+            font-size: 12px;
+        }
+
+        .control-box:not(:first-child) {
+            width: 130px;
+            /* Set a narrower width for "Lives left" and "Score" boxes */
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="controls">
+        <div class="control-box">
+            <label for="speedSlider">Cannon Moving Speed:</label>
+            <input type="range" id="speedSlider" min="1" max="10" value="5">
+        </div>
+        <div class="control-box">
+            <p>Lives left: <span id="lives">5</span></p>
+        </div>
+        <div class="control-box">
+            <p>Score: <span id="score">0</span></p>
+        </div>
+    </div>
+
+    <audio id="fireSound" src="shot.m4a"></audio>
+    <audio id="explosionSound" src="explosion.m4a"></audio>
+
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+
+        let speedSlider = document.getElementById("speedSlider");
+        let cannonSpeed = parseInt(speedSlider.value);
+
+        let showExplosion = false;
+        let explosionX = 0;
+        let explosionY = 0;
+        let gameOver = false; // New flag to indicate when the game is over
+
+        // New variables for lives and score
+        let lives = 5;
+        let score = 0;
+
+        // Track initial window positions to detect movement
+        let initialWindowY = window.scrollY;
+        let initialWindowX = window.scrollX;
+
+        let cannon = {
+            x: 150,
+            y: window.innerHeight - 200,
+            width: 300,
+            height: 60,
+            turretAngle: 0, // Initial angle
+            movingLeft: false,
+            movingRight: false,
+            atRightEdge: false, // Track if cannon is at the right edge
+            wasAtRightEdge: false // New flag to track if the cannon was at the right edge when resizing
+        };
+
+        let wheel = {
+            x: cannon.x + 90,
+            y: cannon.y + 55,
+            radius: 70,
+            rotationAngle: 0 // Added rotation angle for the wheel
+        };
+
+        let cannonball = {
+            x: null,
+            y: null,
+            radius: 20,
+            angle: null,
+            speed: 15,
+            inFlight: false
+        };
+
+        const fireSound = document.getElementById('fireSound');
+        const explosionSound = document.getElementById('explosionSound');
+
+        let background = new Image();
+        background.src = "Background.jpg";
+
+        let wheelImage = new Image();
+        wheelImage.src = "Wheel.png";
+
+        let cannonImage = new Image();
+        cannonImage.src = "Carriage.png";
+
+        let turretImage = new Image();
+        turretImage.src = "Turret.png";
+
+        let explosionImage = new Image();
+        explosionImage.src = "explosion.gif";
+
+        // New balloon properties
+        let balloonImage = new Image();
+        balloonImage.src = "FuGo.png";
+
+        let balloon = {
+            x: Math.random() * (canvas.width - cannon.width - 50) + cannon.width + 100, // Start from a random position to the right of the cannon's width
+            y: 0,
+            width: 100,
+            height: 210,
+            speed: 2,
+            isHit: false,
+            hasHitBottom: false // New flag to track if balloon has hit the bottom
+        };
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+
+        function drawCannon() {
+            drawTurret();
+            drawCarriage();
+            drawWheel();
+        }
+
+        function drawWheel() {
+            ctx.save();
+            ctx.translate(wheel.x, wheel.y);
+            ctx.rotate(wheel.rotationAngle); // Apply rotation for the wheel
+            ctx.drawImage(wheelImage, -wheel.radius, -wheel.radius, wheel.radius * 2, wheel.radius * 2);
+            ctx.restore();
+        }
+
+        function drawCarriage() {
+            ctx.drawImage(cannonImage, cannon.x - 55, cannon.y + 25, cannon.width - 30, cannon.height + 25);
+        }
+
+        function drawTurret() {
+            ctx.save();
+            ctx.translate(wheel.x, cannon.y); // Align turret center with wheel center
+            ctx.rotate(cannon.turretAngle * Math.PI / 180); // Apply the turret rotation based on the angle
+            ctx.drawImage(turretImage, -cannon.width / 2, -cannon.height / 2, cannon.width, cannon.height);
+            ctx.restore();
+        }
+
+        function moveCannon() {
+            if (cannon.movingLeft && cannon.x > 55) {
+                cannon.x -= cannonSpeed;
+                wheel.x = cannon.x + 90;
+                wheel.rotationAngle -= 0.05 * cannonSpeed; // Rotate wheel counterclockwise when moving left
+                cannon.atRightEdge = false;
+                cannon.wasAtRightEdge = false;
+            } else if (cannon.movingRight && (cannon.x + cannon.width) < canvas.width) {
+                cannon.x += cannonSpeed;
+                wheel.x = cannon.x + 90;
+                wheel.rotationAngle += 0.05 * cannonSpeed; // Rotate wheel clockwise when moving right
+                cannon.atRightEdge = false;
+                cannon.wasAtRightEdge = false;
+            }
+
+            // Check if the cannon is at the right edge
+            if (cannon.x + cannon.width >= canvas.width) {
+                cannon.atRightEdge = true;
+                cannon.wasAtRightEdge = true;
+            }
+        }
+
+        function shootCannonball() {
+            // Prevent firing if the game is over
+            if (gameOver) return;
+            if (!cannonball.inFlight) {
+                fireSound.play();
+                cannonball.inFlight = true;
+
+                // Set the cannonball's angle to match the turret's angle
+                cannonball.angle = cannon.turretAngle;
+
+                // Calculate the cannonball's starting position at the turret's tip
+                let turretTipX = wheel.x + Math.cos(cannon.turretAngle * Math.PI / 180) * (cannon.width / 2);
+                let turretTipY = cannon.y + Math.sin(cannon.turretAngle * Math.PI / 180) * (cannon.width / 2);
+
+                // Set the initial position of the cannonball
+                cannonball.x = turretTipX;
+                cannonball.y = turretTipY;
+            }
+        }
+
+        // Draw and move balloon
+        function drawBalloon() {
+            if (!balloon.isHit && !gameOver) { // Only draw the balloon if game is not over
+                ctx.drawImage(balloonImage, balloon.x, balloon.y, balloon.width, balloon.height);
+            }
+        }
+
+        function moveBalloon() {
+            if (!balloon.isHit && !balloon.hasHitBottom && !gameOver) { // Move only if game is not over
+                balloon.y += balloon.speed;
+
+                // If balloon reaches bottom of screen, handle as a miss
+                if (balloon.y + balloon.height >= canvas.height) {
+                    balloon.hasHitBottom = true; // Set flag to prevent multiple calls
+                    handleMiss();
+                }
+            }
+        }
+
+        // Handle balloon hit by cannonball
+        function handleHit() {
+            balloon.isHit = true;
+            explosionSound.currentTime = 0; // Reset sound position to the beginning
+            explosionSound.play();
+            ctx.drawImage(explosionImage, balloon.x, balloon.y, balloon.width, balloon.height);
+            score++;
+            document.getElementById("score").innerText = score;
+            setTimeout(resetBalloon, 1000);
+        }
+
+        // Handle balloon miss
+        function handleMiss() {
+            explosionSound.currentTime = 0; // Reset sound position to the beginning
+            explosionSound.play();
+
+            // Set explosion position and showExplosion flag
+            explosionX = balloon.x;
+            explosionY = balloon.y;
+            showExplosion = true;
+
+            // Reduce lives
+            lives--;
+            document.getElementById("lives").innerText = lives;
+
+            // Delay for explosion effect and check for game over
+            setTimeout(() => {
+                showExplosion = false; // Hide explosion after display duration
+
+                // Check for game over condition after showing the explosion
+                if (lives <= 0) {
+                    gameOver = true; // Set game over flag
+                    document.getElementById("lives").innerText = "Game Over";
+                } else {
+                    resetBalloon(); // Reset the balloon if game is not over
+                }
+            }, 500); // Show explosion for 500ms
+        }
+
+
+        function resetBalloon() {
+            // Set an additional offset to ensure the balloon starts farther from the left edge
+            let extraOffset = 300; // Increase this value to set the balloon farther from the left
+            let minX = cannon.width + extraOffset; // Minimum x-position
+            let maxX = canvas.width - balloon.width - 20; // Max x-position with a margin on the right
+            balloon.x = Math.random() * (maxX - minX) + minX; // Random x between minX and maxX
+            balloon.y = 0;
+            balloon.isHit = false;
+            balloon.hasHitBottom = false; // Reset the bottom hit flag
+        }
+
+
+
+
+        function checkCollision() {
+            if (cannonball.inFlight && !balloon.isHit) {
+                if (
+                    cannonball.x > balloon.x &&
+                    cannonball.x < balloon.x + balloon.width &&
+                    cannonball.y > balloon.y &&
+                    cannonball.y < balloon.y + balloon.height
+                ) {
+                    cannonball.inFlight = false;
+                    handleHit();
+                }
+            }
+        }
+
+        function moveCannonball() {
+            if (cannonball.inFlight) {
+                cannonball.x += Math.cos(cannonball.angle * Math.PI / 180) * cannonball.speed;
+                cannonball.y += Math.sin(cannonball.angle * Math.PI / 180) * cannonball.speed;
+
+                if (cannonball.x > canvas.width || cannonball.y > canvas.height || cannonball.y < 0 || cannonball.x < 0) {
+                    cannonball.inFlight = false;
+                }
+            }
+            checkCollision();
+        }
+
+        function drawCannonball() {
+            if (cannonball.inFlight) {
+                ctx.beginPath();
+                ctx.arc(cannonball.x, cannonball.y, cannonball.radius, 0, 2 * Math.PI);
+                ctx.fillStyle = "black";
+                ctx.fill();
+                ctx.closePath();
+            }
+        }
+
+        function gameLoop() {
+            let scrollOffsetY = window.scrollY - initialWindowY;
+            cannon.y = window.innerHeight - 200 + scrollOffsetY;
+            wheel.y = cannon.y + 55;
+
+            if (cannon.wasAtRightEdge) {
+                let scrollOffsetX = window.scrollX - initialWindowX;
+                cannon.x = Math.min(canvas.width - cannon.width, cannon.x + scrollOffsetX);
+                wheel.x = cannon.x + 90;
+            }
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(background, 0, 0, canvas.width, canvas.height);
+            moveCannon();
+            moveCannonball();
+            moveBalloon();
+            drawCannon();
+            drawCannonball();
+            drawBalloon();
+
+            // Draw explosion if showExplosion is true
+            if (showExplosion) {
+                ctx.drawImage(explosionImage, explosionX, explosionY, balloon.width, balloon.height);
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+
+        window.addEventListener('resize', resizeCanvas);
+
+        window.addEventListener('keydown', (e) => {
+            // Prevent movement and turret control if the game is over
+            if (gameOver) return;
+            if (e.key === 'ArrowLeft') {
+                cannon.movingLeft = true;
+            }
+            if (e.key === 'ArrowRight') {
+                cannon.movingRight = true;
+            }
+            if (e.key === 'ArrowUp' && cannon.turretAngle > -35) {
+                cannon.turretAngle -= 2;
+            }
+            if (e.key === 'ArrowDown' && cannon.turretAngle < 20) {
+                cannon.turretAngle += 2;
+            }
+            if (e.key === ' ') {
+                shootCannonball();
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            // Prevent movement and turret control if the game is over
+            if (gameOver) return;
+            if (e.key === 'ArrowLeft') {
+                cannon.movingLeft = false;
+            }
+            if (e.key === 'ArrowRight') {
+                cannon.movingRight = false;
+            }
+        });
+
+        speedSlider.addEventListener('input', function () {
+            cannonSpeed = parseInt(speedSlider.value);
+        });
+
+        // Balloon dropping interval set to 2 pixels every 10 milliseconds
+        setInterval(() => {
+            if (!balloon.isHit && !balloon.hasHitBottom && !gameOver) {
+                balloon.y += 2;
+
+                // If the balloon reaches the bottom of the screen, handle it as a miss
+                if (balloon.y + balloon.height >= canvas.height) {
+                    balloon.hasHitBottom = true;
+                    handleMiss();
+                }
+            }
+        }, 10); // Update every 10 milliseconds
+
+        resizeCanvas();
+        gameLoop();
+
+
+    </script>
+</body>
+
+</html>
